@@ -71,15 +71,15 @@ arch-chroot /mnt /bin/bash <<EOF
 echo root:azerty123 | chpasswd
 
 # Création des utilisateurs
-useradd -m -G wheel -s /bin/bash user
-echo user:azerty123 | chpasswd
+useradd -m -G wheel -s /bin/bash jean
+echo jean:azerty123 | chpasswd
 
-useradd -m -G users -s /bin/bash son
-echo son:azerty123 | chpasswd
+useradd -m -G users -s /bin/bash philipe
+echo philipe:azerty123 | chpasswd
 
 # Installer les outils de base
 pacman -S --noconfirm sudo grub efibootmgr networkmanager openssh \
-  virtualbox-guest-utils mesa hyprland xdg-utils xdg-user-dirs firefox
+  virtualbox-guest-utils mesa hyprland xdg-utils xdg-user-dirs firefox gcc
 
 # Activer les services essentiels
 systemctl enable NetworkManager
