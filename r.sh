@@ -101,4 +101,4 @@ EOF
 # Démontage et reboot
 umount -R /mnt
 swapoff -a
-echo "Installation terminée ! Redémarre la VM avec 'reboot'"
+echo "Installation terminée"
