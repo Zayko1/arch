@@ -1,57 +1,129 @@
 #!/bin/bash
 
-# --- Configuration clavier ---
-loadkeys fr-latin1
+# Envs
+disk="/dev/sda"
+device_mapper="/dev/mapper/cryptlvm"
+hostname="archlinux"
+user_collegue="collegue"
+user_fils="fils"
+default_password="azerty123"
 
-# --- Partitionnement ---
-# Efface la table de partition et crée une nouvelle table GPT
-echo -e "g\nn\n\n\n+512M\nn\n\n\n\nw" | fdisk /dev/sda
+# NTP
+timedatectl set-ntp true
 
-# --- Formatage des partitions ---
-mkfs.fat -F32 /dev/sda1        # Partition EFI (512M)
-mkfs.ext4 /dev/sda2            # Partition racine (reste du disque)
+# Partitionnement avec fdisk
+echo -e "g\nn\n1\n\n+512M\nt\n1\n1\nn\n2\n\n+1G\nn\n3\n\n\nw" | fdisk "$disk"
 
-# --- Montage des partitions ---
-mount /dev/sda2 /mnt           # Monte la partition racine
-mkdir -p /mnt/boot/EFI         # Crée le point de montage pour l'EFI
-mount /dev/sda1 /mnt/boot/EFI  # Monte la partition EFI
+# Activer le drapeau boot sur la partition EFI
+parted "$disk" set 1 boot on
 
-# --- Installation de base ---
-pacstrap /mnt base linux linux-firmware nano sudo grub efibootmgr networkmanager
+# Formatage et chiffrement du disque principal
+mkfs.fat -F32 "${disk}1"  # EFI
+mkfs.ext4 "${disk}2"  # /boot
+echo -n "$default_password" | cryptsetup luksFormat --batch-mode "${disk}3"
+echo -n "$default_password" | cryptsetup open "${disk}3" cryptlvm
 
-# --- Génération du fstab ---
+# Configuration de LVM
+pvcreate "$device_mapper"
+vgcreate vg_arch "$device_mapper"
+lvcreate -L 10G vg_arch -n root
+lvcreate -L 20G vg_arch -n home
+lvcreate -L 4G vg_arch -n swap
+lvcreate -L 10G vg_arch -n encrypted
+lvcreate -L 10G vg_arch -n virtualbox
+lvcreate -L 20G vg_arch -n partage
+
+# Formatage des partitions
+mkfs.ext4 /dev/vg_arch/root
+mkfs.ext4 /dev/vg_arch/home
+mkfs.ext4 /dev/vg_arch/virtualbox
+mkfs.ext4 /dev/vg_arch/partage
+mkswap /dev/vg_arch/swap
+
+# Montage des partitions
+mount /dev/vg_arch/root /mnt
+mkdir -p /mnt/{home,mnt/virtualbox,mnt/partage}
+mkdir -p /mnt/boot/
+mkdir -p /mnt/boot/efi
+mount "${disk}1" /mnt/boot/efi  # Monte EFI
+mount "${disk}2" /mnt/boot  # Monte /boot
+mount /dev/vg_arch/home /mnt/home
+mount /dev/vg_arch/virtualbox /mnt/mnt/virtualbox
+mount /dev/vg_arch/partage /mnt/mnt/partage
+swapon /dev/vg_arch/swap
+
+# Installation de base
+pacstrap /mnt base linux linux-firmware vim linux-headers grub efibootmgr lvm2
+
+# Configuration du système
 genfstab -U /mnt >> /mnt/etc/fstab
+echo "$hostname" > /mnt/etc/hostname
 
-# --- Configuration système ---
+# POST-INSTALLATION
+echo "Configuration post-installation..."
 arch-chroot /mnt /bin/bash <<EOF
-
-# Configuration de base
+# Configuration de l'heure
 ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime
 hwclock --systohc
-echo "fr_FR.UTF-8 UTF-8" >> /etc/locale.gen
+
+# Configuration de la langue
+echo "fr_FR.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen
 echo "LANG=fr_FR.UTF-8" > /etc/locale.conf
-echo "KEYMAP=fr-latin1" > /etc/vconsole.conf
-echo "arch-test" > /etc/hostname
+echo "KEYMAP=fr" > /etc/vconsole.conf
 
-# Configuration utilisateur
-echo "root:azerty123" | chpasswd
-useradd -m -G wheel -s /bin/bash testuser
-echo "testuser:azerty123" | chpasswd
+# Création des utilisateurs
+useradd -m -G wheel -s /bin/bash $user_collegue
+echo "$user_collegue:$default_password" | chpasswd
+useradd -m -G wheel -s /bin/bash $user_fils
+echo "$user_fils:$default_password" | chpasswd
 
-# Configuration sudo
+# Ajout des droits sudo aux utilisateurs
 echo "%wheel ALL=(ALL) ALL" >> /etc/sudoers
 
-# Configuration GRUB
-grub-install --target=x86_64-efi --efi-directory=/boot/EFI --bootloader-id=GRUB
+# Modifier mkinitcpio > LUSK et LVM
+sed -i 's/^HOOKS=.*/HOOKS="base udev autodetect modconf block keyboard keymap encrypt lvm2 filesystems fsck"/' /etc/mkinitcpio.conf
+mkinitcpio -p linux
+
+# Configuration de GRUB
+echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+sed -i 's/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX="cryptdevice=UUID=$(blkid -s UUID -o value ${disk}3):cryptlvm root=\/dev\/vg_arch\/root"/' /etc/default/grub
+s
+echo "insmod luks2" >> /etc/grub.d/40_custom
+
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Activation des services
-systemctl enable NetworkManager
+# === INSTALLATION ENVIRONNEMENT GRAPHIQUE ===
+echo "Installation de l'environnement graphique..."
+pacman -S --noconfirm xorg xorg-xinit xterm xorg-apps i3 dmenu alacritty picom feh rofi firefox thunar virtualbox virtualbox-host-dkms --needed
 
+# Configuration des modules VirtualBox
+modprobe vboxdrv
+systemctl enable vboxservice
+
+# === CONFIGURATION DE L'INTERFACE GRAPHIQUE ===
+echo "Configuration de l'interface graphique..."
+echo "exec i3" > /home/$user_collegue/.xinitrc
+echo "exec i3" > /home/$user_fils/.xinitrc
+chown $user_collegue:$user_collegue /home/$user_collegue/.xinitrc
+chown $user_fils:$user_fils /home/$user_fils/.xinitrc
+
+# Correction des permissions de .Xauthority
+touch /home/$user_collegue/.Xauthority
+touch /home/$user_fils/.Xauthority
+chown $user_collegue:$user_collegue /home/$user_collegue/.Xauthority
+chown $user_fils:$user_fils /home/$user_fils/.Xauthority
+chmod 600 /home/$user_collegue/.Xauthority
+chmod 600 /home/$user_fils/.Xauthority
 EOF
 
-# --- Nettoyage final ---
-umount -R /mnt
+# Ne marche pas dans le script actuellement donc je tente de les refaires après
+mkdir -p /mnt/boot/efi
+mount /dev/sda1 /mnt/boot/efi
+arch-chroot /mnt /bin/bash <<EOF
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+EOF
 
-echo "Installation terminée ! Redémarrez la machine."
+echo "Installation terminé"
